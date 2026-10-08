@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config.models import AppConfig
+from ..utils import clip
 from .artifacts import ArtifactWriter
 from .models import Artifact, BoardNote, ClassTask, SessionBundle, SessionInfo, TranscriptSegment
 from .session import SessionStore, SessionWorkspace
@@ -103,6 +104,20 @@ def _default_client_factory(endpoint):
     return LLMClient(endpoint)
 
 
+def _default_supervisor_factory(engine: Any, cfg: AppConfig) -> Any:
+    """默认的主 Agent（课堂督导）构造方式。"""
+    from ..ai.agent import TaskSupervisor
+
+    return TaskSupervisor(
+        engine._get_client(), cfg.model, cfg.person, engine,
+        overrides=cfg.prompt_overrides,
+        max_rounds=cfg.behavior.agent_max_tool_rounds,
+        min_relevance=cfg.behavior.agent_min_relevance,
+        tools_enabled=cfg.behavior.agent_tools_enabled,
+        allow_revise=cfg.behavior.auto_revise_solved,
+    )
+
+
 # ------------------------------------------------------------------ 引擎
 class ClassEngine:
     """单次听课会话的执行引擎（一个实例可反复 start/stop）。"""
@@ -117,6 +132,7 @@ class ClassEngine:
         audio_factory: Callable | None = None,
         screen_factory: Callable | None = None,
         client_factory: Callable | None = None,
+        supervisor_factory: Callable[[Any, AppConfig], Any] | None = None,
     ) -> None:
         self.get_config = get_config
         self.cb = callbacks or EngineCallbacks()
@@ -125,6 +141,7 @@ class ClassEngine:
         self.audio_factory = audio_factory or _default_audio_factory
         self.screen_factory = screen_factory or _default_screen_factory
         self.client_factory = client_factory or _default_client_factory
+        self.supervisor_factory = supervisor_factory or _default_supervisor_factory
 
         self._lock = threading.RLock()
         self._workspace: SessionWorkspace | None = None
@@ -146,6 +163,12 @@ class ClassEngine:
         self._unmerged_board: list[str] = []
         self._notes_inflight = False
         self._solving: set[str] = set()
+        # 主 Agent（课堂督导）：把新听到的信息转成对子 Agent 的任务简报更新
+        self._supervisor: Any = None
+        self._supervisor_key: tuple = ()
+        self._pending_review: list[str] = []
+        self._supervise_busy = False
+        self._questions: list[str] = []
         self._ai_disabled_reason = ""
         self._chunk_index = 0
         self._last_voice_ts = time.time()
@@ -226,6 +249,9 @@ class ClassEngine:
             self._unmerged = []
             self._unmerged_board = []
             self._solving.clear()
+            self._pending_review = []
+            self._supervise_busy = False
+            self._questions = []
             self._chunk_index = ws.info.transcript_count
             self._last_voice_ts = time.time()
             self._started_at = time.time()
@@ -475,12 +501,14 @@ class ClassEngine:
                 except Exception as exc:
                     self.cb.emit_log("WARNING", f"课堂笔记整理失败：{exc}")
                     return
-            self._extract_tasks_job()
+            # 本轮真正"新听到/新看到"的内容 -> 交给主 Agent 判断是否影响已知任务
+            consumed = chr(10).join(lines + board_lines)
+            self._extract_tasks_job(consumed)
         finally:
             with self._lock:
                 self._notes_inflight = False
 
-    def _extract_tasks_job(self) -> None:
+    def _extract_tasks_job(self, consumed_text: str = "") -> None:
         if not self._ai_guard("任务识别"):
             return
         cfg = self.get_config()
@@ -517,11 +545,19 @@ class ClassEngine:
             ws.save_info()
             if cfg.behavior.auto_solve_tasks:
                 self.solve_all_pending()
+        # 无论有没有发现新任务，都要让主 Agent 看一眼：老师可能在补充已有任务的要求
+        self._supervise(consumed_text)
 
     # ------------------------------------------------------------ 任务作答
     def _build_context(self, task: ClassTask, limit: int = 6000) -> str:
         ws = self._workspace
         chunks: list[str] = []
+        if (task.brief or "").strip():
+            chunks.append(
+                "## 任务简报（主讲 Agent 维护，优先级最高，必须满足）\n" + task.brief.strip()
+            )
+        if task.requirements:
+            chunks.append("## 老师明确提出的要求\n- " + "\n- ".join(task.requirements))
         if self._notes:
             chunks.append("## 课堂笔记\n" + self._notes)
         if ws is not None:
@@ -572,6 +608,7 @@ class ClassEngine:
                 return
             task.status = "working"
             task.attempts += 1
+            task.revision += 1
             task.touch()
             self._emit_task(task)
             self.cb.emit_stage("solve", f"正在完成：{task.title}")
@@ -621,6 +658,219 @@ class ClassEngine:
         if ws is not None:
             ws.save_tasks(self.tasks())
         _safe(self.cb.on_task, task)
+
+    # ------------------------------------------------------------ 主 Agent（课堂督导）
+    def _get_supervisor(self, cfg: AppConfig) -> Any:
+        """惰性构造督导 Agent；相关配置变化时重建；构造失败返回 None 并降级。"""
+        key = (
+            cfg.model.base_url,
+            cfg.model.chat_model,
+            int(cfg.behavior.agent_max_tool_rounds or 1),
+            round(float(cfg.behavior.agent_min_relevance or 0.0), 4),
+            bool(cfg.behavior.auto_revise_solved),
+        )
+        try:
+            if self._supervisor is None or key != self._supervisor_key:
+                self._supervisor = self.supervisor_factory(self, cfg)
+                self._supervisor_key = key
+            self._supervisor.client = self._get_client()
+        except Exception as exc:  # pragma: no cover - 模块缺失/构造失败
+            log.warning("无法构造主 Agent：%s", exc)
+            self._supervisor = None
+            return None
+        return self._supervisor
+
+    def _supervise(self, consumed_text: str) -> None:
+        """把新内容丢给督导队列；同一时刻只跑一个督导任务，避免重复烧钱。"""
+        if not (consumed_text or "").strip():
+            return
+        cfg = self.get_config()
+        if not cfg.behavior.agent_tools_enabled:
+            return
+        with self._lock:
+            self._pending_review.append(consumed_text.strip())
+            if self._supervise_busy:
+                return
+            self._supervise_busy = True
+        self._submit(self._supervise_job)
+
+    def _supervise_job(self) -> None:
+        while True:
+            with self._lock:
+                if not self._pending_review:
+                    self._supervise_busy = False
+                    return
+                text = chr(10).join(self._pending_review)
+                self._pending_review = []
+            try:
+                self._run_review(text)
+            except Exception as exc:  # noqa: BLE001 - 督导失败不能影响听课
+                log.warning("主 Agent 督导失败：%s", exc)
+
+    def _run_review(self, text: str) -> None:
+        cfg = self.get_config()
+        if not cfg.behavior.agent_tools_enabled:
+            return
+        tasks = [t for t in self.tasks() if not t.closed]
+        if not tasks:
+            return
+        if not self._ai_guard("主 Agent 督导"):
+            return
+        supervisor = self._get_supervisor(cfg)
+        if supervisor is None:
+            return
+        ws = self._workspace
+        self.cb.emit_stage("supervise", "正在判断新内容是否影响已知任务")
+        review = supervisor.review(text, tasks, session_context=self._session_brief(cfg))
+        for act in review.actions:
+            level = "INFO" if act.ok else "WARNING"
+            self.cb.emit_log(level, f"主 Agent · {act.name}：{act.result}")
+        if review.actions:
+            self.cb.emit_stage("supervise", "已把最新要求转给作业子 Agent")
+            if ws is not None:
+                ws.save_tasks(self.tasks())
+        elif review.summary:
+            self.cb.emit_log("DEBUG", f"主 Agent：{clip(review.summary, 160)}")
+        if review.degraded:
+            self.cb.emit_log("WARNING", review.degraded_reason)
+
+    @staticmethod
+    def _session_brief(cfg: AppConfig) -> str:
+        person = cfg.person
+        bits: list[str] = []
+        if person.subject:
+            bits.append("科目：" + person.subject)
+        klass = (person.grade or "") + (person.class_name or "")
+        if klass:
+            bits.append("班级：" + klass)
+        if person.teacher_name:
+            bits.append("任课教师：" + person.teacher_name)
+        return "；".join(bits) if bits else "(无)"
+
+    # -------- 以下方法是主 Agent 的工具实现（由 ai.tools.dispatch_tool 调用） --------
+    def agent_update_task_brief(self, task_id: str, requirements: list[str] | None = None,
+                                deadline: str = "", detail_append: str = "",
+                                subject: str = "") -> str:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return f"找不到任务 {task_id}，请从任务清单里原样复制 id"
+            added: list[str] = []
+            for req in requirements or []:
+                req = str(req).strip()
+                if req and req not in task.requirements:
+                    task.requirements.append(req)
+                    added.append(req)
+            if deadline and deadline != task.deadline:
+                task.deadline = deadline
+                added.append("截止时间改为 " + deadline)
+            if subject and not task.subject:
+                task.subject = subject
+            extra = (detail_append or "").strip()
+            if extra:
+                task.brief = (task.brief + chr(10) + extra).strip() if task.brief else extra
+                added.append("补充了 %d 字说明" % len(extra))
+            task.touch()
+        if not added:
+            return "没有新增内容，「" + task.title + "」的简报未变化"
+        self._emit_task(task)
+        self.cb.emit_log("INFO", "主 Agent 更新任务简报：" + task.title + " → " + "；".join(added))
+        return "已更新「" + task.title + "」的任务简报：" + "；".join(added)
+
+    def agent_redispatch_task(self, task_id: str, instruction: str = "", reason: str = "") -> str:
+        cfg = self.get_config()
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return f"找不到任务 {task_id}"
+            if task.closed:
+                return "「" + task.title + "」已关闭，未重做"
+            manual = bool((instruction or "").strip())
+            if task.status == "solved" and not manual and not cfg.behavior.auto_revise_solved:
+                return "当前设置为不自动重做，已跳过（需要时可在任务页手动点「重做」）"
+            limit = max(0, int(cfg.behavior.max_auto_revisions or 0))
+            if not manual and task.auto_revised >= limit:
+                return ("「" + task.title + "」已自动重做 " + str(task.auto_revised)
+                        + " 次，达到上限 " + str(limit) + "，未再重做")
+            if manual:
+                pass
+            else:
+                task.auto_revised += 1
+            if manual:
+                task.brief = (task.brief + chr(10) + instruction.strip()).strip() if task.brief \
+                    else instruction.strip()
+            task.status = "queued"
+            task.error = ""
+            task.touch()
+        self._emit_task(task)
+        self.cb.emit_log("INFO", "主 Agent 派活给子 Agent 重做：" + task.title
+                         + "（" + (reason or "要求有更新") + "）")
+        self.solve_task(task_id)
+        return "已让子 Agent 用最新简报重新作答：「" + task.title + "」"
+
+    def agent_create_task(self, title: str, detail: str = "", task_type: str = "作业",
+                          requirements: list[str] | None = None,
+                          confidence: float = 0.8) -> str:
+        title = (title or "").strip()
+        if not title:
+            return "标题为空，未创建任务"
+        try:
+            from ..ai.tasks import title_similarity
+        except Exception:  # pragma: no cover
+            title_similarity = None  # type: ignore[assignment]
+        with self._lock:
+            existing = list(self._tasks.values())
+        if title_similarity is not None:
+            for task in existing:
+                try:
+                    if title_similarity(task.title, title) > 0.75:
+                        return "已存在同类任务「" + task.title + "」，未重复创建"
+                except Exception:
+                    continue
+        task = self.add_manual_task(title, detail, task_type or "作业")
+        if requirements:
+            with self._lock:
+                for req in requirements:
+                    req = str(req).strip()
+                    if req and req not in task.requirements:
+                        task.requirements.append(req)
+                task.confidence = float(confidence or 0.8)
+                task.touch()
+            self._emit_task(task)
+        cfg = self.get_config()
+        if cfg.behavior.auto_solve_tasks:
+            self.solve_task(task.id)
+        return "已新建任务「" + task.title + "」" + ("并交给子 Agent 作答" if cfg.behavior.auto_solve_tasks else "")
+
+    def agent_close_task(self, task_id: str, reason: str = "") -> str:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return f"找不到任务 {task_id}"
+            task.closed = True
+            task.status = "skipped"
+            if reason:
+                task.brief = (task.brief + chr(10) + "【已关闭】" + reason).strip() if task.brief else ("【已关闭】" + reason)
+            task.touch()
+        self._emit_task(task)
+        self.cb.emit_log("INFO", "主 Agent 关闭任务：" + task.title + ("（" + reason + "）" if reason else ""))
+        return "已关闭任务「" + task.title + "」"
+
+    def agent_raise_question(self, task_id: str, question: str) -> str:
+        text = (question or "").strip()
+        if not text:
+            return "问题为空，未记录"
+        with self._lock:
+            self._questions.append(text)
+            task = self._tasks.get(task_id) if task_id else None
+            if task is not None:
+                if text not in task.questions:
+                    task.questions.append(text)
+                task.touch()
+        if task is not None:
+            self._emit_task(task)
+        self.cb.emit_log("WARNING", "主 Agent 存疑（待人工确认）：" + text)
+        return "已记录存疑：" + clip(text, 120)
 
     # ------------------------------------------------------------ 任务管理
     def add_manual_task(self, title: str, detail: str = "", task_type: str = "作业") -> ClassTask:
@@ -782,6 +1032,14 @@ class ClassEngine:
                     self._merge_notes_job(force=True)
                 except Exception as exc:
                     log.warning("收尾整理笔记失败: %s", exc)
+                if self._questions:
+                    pending = [q for q in self._questions if q.strip()]
+                    if pending:
+                        self._notes = (self._notes.rstrip() + chr(10) + chr(10)
+                                       + "## 存疑（AI 提出，待人工确认）" + chr(10)
+                                       + chr(10).join("- " + q for q in pending))
+                        if ws is not None:
+                            ws.write_notes(self._notes)
                 cfg = self.get_config()
                 if cfg.behavior.solve_on_session_end:
                     pending = [t for t in self.tasks() if t.status in ("discovered", "queued", "failed")]
