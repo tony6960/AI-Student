@@ -248,6 +248,13 @@ class BehaviorConfig:
     vision_analysis: bool = True         # 是否用视觉模型解析板书/PPT
     notes_every_n_chunks: int = 3        # 每 N 个音频切片汇总一次课堂笔记
 
+    # --- 主 Agent（工具调用）：听到新信息后自动把补充要求转给作业子 Agent ---
+    agent_tools_enabled: bool = True     # 是否启用主 Agent 的工具调用
+    agent_max_tool_rounds: int = 3       # 单次督导最多几轮工具调用
+    auto_revise_solved: bool = True      # 老师后补要求时自动让子 Agent 重做
+    max_auto_revisions: int = 2          # 每个任务最多自动重做几次（控 API 开销）
+    agent_min_relevance: float = 0.2     # 降级启发式下的相关度门槛（模型路径只看"是否值得看一眼"）
+
 
 # ---------------------------------------------------------------- 顶层配置
 @dataclass

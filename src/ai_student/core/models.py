@@ -94,6 +94,11 @@ class ClassTask:
     status: TaskStatus = "discovered"
     answer: str = ""
     workpaper: str = ""           # 解题过程
+    brief: str = ""               # 交给"作业子 Agent"的任务简报，可被主 Agent 用工具增补
+    revision: int = 0             # 累计作答次数（含自动重做）
+    auto_revised: int = 0         # 被主 Agent 自动重做的次数（用于限流，避免反复烧钱）
+    questions: list[str] = field(default_factory=list)   # 存疑，待人工确认
+    closed: bool = False          # 老师取消 / 已交代完毕，不再处理
     artifacts: list[str] = field(default_factory=list)   # 产出的绝对路径
     source_segments: list[int] = field(default_factory=list)
     source_notes: list[int] = field(default_factory=list)
