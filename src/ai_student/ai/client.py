@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import time
 from pathlib import Path
@@ -99,6 +100,59 @@ def _part_text(part: Any) -> str:
     if text is None:
         text = _get(_get(part, "delta"), "content")
     return str(text or "")
+
+
+def response_tool_calls(resp: Any) -> list[dict[str, Any]]:
+    """从响应里取出 tool_calls，统一成 [{"id","name","arguments"(dict),"raw"}]。"""
+    choices = _get(resp, "choices") or []
+    if not choices:
+        return []
+    message = _get(choices[0], "message")
+    calls = _get(message, "tool_calls") or []
+    out: list[dict[str, Any]] = []
+    for call in calls:
+        fn = _get(call, "function")
+        raw = _get(fn, "arguments")
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except Exception:
+                args = {}
+        elif isinstance(raw, dict):
+            args = dict(raw)
+        else:
+            args = {}
+        out.append({
+            "id": str(_get(call, "id") or ""),
+            "name": str(_get(fn, "name") or ""),
+            "arguments": args if isinstance(args, dict) else {},
+            "raw": raw if isinstance(raw, str) else "",
+        })
+    return out
+
+
+def assistant_message(resp: Any) -> dict[str, Any]:
+    """把响应里的 assistant 消息还原成可回灌的消息字典（保留 tool_calls）。"""
+    choices = _get(resp, "choices") or []
+    message = _get(choices[0], "message") if choices else None
+    content = _get(message, "content") or ""
+    if not isinstance(content, str):
+        content = str(content)
+    out: dict[str, Any] = {"role": "assistant", "content": content}
+    calls = _get(message, "tool_calls") or []
+    if calls:
+        out["tool_calls"] = [
+            {
+                "id": str(_get(c, "id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(_get(_get(c, "function"), "name") or ""),
+                    "arguments": _get(_get(c, "function"), "arguments") or "{}",
+                },
+            }
+            for c in calls
+        ]
+    return out
 
 
 def response_text(resp: Any) -> str:
@@ -282,6 +336,32 @@ class LLMClient:
                 lambda: self._client.chat.completions.create(**payload), "对话请求"
             )
         return response_text(resp)
+
+    # -------------------------------------------------- 工具调用（function calling）
+    def chat_with_tools(self, messages: list[dict], tools: list[dict],
+                        model: str | None = None, tool_choice: str = "auto",
+                        temperature: float | None = None,
+                        max_tokens: int | None = None) -> Any:
+        """带工具的一次对话，返回 SDK 原始响应对象（需要读 tool_calls）。
+
+        少数兼容服务不支持 tools 参数，会返回 400/404/422；此时抛出的 AIClientError
+        会被上层 ai.agent 捕获并降级为启发式策略，而不是让整条听课链路失败。
+        """
+        payload: dict[str, Any] = {
+            "model": model or self.cfg.chat_model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+        }
+        temp = self.cfg.temperature if temperature is None else temperature
+        if temp is not None:
+            payload["temperature"] = float(temp)
+        limit = int(max_tokens if max_tokens is not None else (self.cfg.max_tokens or 0))
+        if limit > 0:
+            payload["max_tokens"] = limit
+        return self.request(
+            lambda: self._client.chat.completions.create(**payload), "工具调用请求"
+        )
 
     # -------------------------------------------------- 语音 / 视觉入口
     def transcribe(self, wav_path: Path) -> str:
