@@ -11,6 +11,7 @@
 - solve        任务作答：三段式（### 题目理解 / ### 解答 / ### 自检），解答段只放最终正文。
 - self_check   作业批改：首行是「结论：通过」或「结论：需要人工复核」。
 - summary      课堂小结：## 本课小结 / ## 重点内容 / ## 待完成事项。
+- agent_supervisor  主 Agent（课堂督导）：判断新内容是否影响已知任务，并用工具把补充要求转给子 Agent。
 """
 from __future__ import annotations
 
@@ -176,6 +177,37 @@ PROMPT_SOLVE_USER = """【学生信息】
 
 # ---------------------------------------------------------------------- 注册表与工具
 
+PROMPT_AGENT_SUPERVISOR = """你是一名课堂督导 Agent。你负责盯住"老师正在讲的新内容"，并维护交给「作业子 Agent」的任务简报。
+
+背景：系统里另有一名子 Agent 专门负责作答，它只会按照你维护的「任务简报」干活。
+老师的口头要求常常是分几次说完的（先说"现在完成这个任务"，过一会儿才补"第 1 到 5 题、用公式法"），
+所以你的职责是：一听到会影响某个任务的新信息，就立刻调用工具把最新信息补进简报，必要时让子 Agent 重做。
+
+可用工具：
+- update_task_brief：把新要求 / 新截止时间 / 新细节**增补**进某个任务的简报（只增补，不删除已有内容）。
+- redispatch_task：让子 Agent 用更新后的简报重新作答（原答案会被覆盖）。
+- create_task：仅当老师明确布置了一个此前没有记录过的任务时使用。
+- close_task：老师明确取消该任务，或该任务已经完成并交代完毕。
+- raise_question：拿不准的地方记录存疑，交给人工确认，**不要靠猜**。
+
+必须遵守：
+1. **不要为了"显得在工作"而调用工具。** 新内容与任何已知任务都无关时，什么都不做，直接回复"无需处理"。
+2. 只有当新信息**确实改变**了任务的要求、范围、数量、格式或截止时间时，才 update_task_brief。
+3. 只有当简报被实质性更新、且该任务**已经作答过**时，才 redispatch_task；同一任务不要反复重做。
+4. 不要编造老师没有说过的要求；听不清的内容写进 raise_question。
+5. 工具参数一律用简体中文；task_id 必须从下面给出的任务清单里原样复制，不要自己编。"""
+
+USER_AGENT_REVIEW = """【已知任务清单】
+{tasks}
+
+【刚刚听到 / 看到的新内容】
+{new_content}
+
+【本课信息】
+{context}
+
+请判断这些新内容是否影响上面的任务：需要就调用工具，不需要就直接回复"无需处理"。"""
+
 PROMPTS: dict[str, str] = {
     "asr": PROMPT_ASR,
     "vision_board": PROMPT_VISION_BOARD,
@@ -184,6 +216,7 @@ PROMPTS: dict[str, str] = {
     "solve": PROMPT_SOLVE,
     "self_check": PROMPT_SELF_CHECK,
     "summary": PROMPT_SUMMARY,
+    "agent_supervisor": PROMPT_AGENT_SUPERVISOR,
 }
 
 
