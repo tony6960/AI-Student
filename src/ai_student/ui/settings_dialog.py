@@ -471,6 +471,10 @@ class SettingsForm(QWidget):
         self.spn_silence = _spin(30, 3600, 300, " 秒", 30)
         self.spn_concurrent = _spin(1, 8, 2, " 路")
         self.spn_notes_every = _spin(1, 20, 3, " 片")
+        self.chk_agent = QCheckBox("启用主 Agent：听到新信息后自动转给作业子 Agent")
+        self.chk_revise = QCheckBox("老师补充要求后，自动让 AI 重做该作业")
+        self.spn_max_revise = _spin(0, 10, 2, " 次")
+        self.spn_tool_rounds = _spin(1, 8, 3, " 轮")
 
         form.addRow("", self.chk_auto_start)
         form.addRow("", self.chk_understand)
@@ -482,7 +486,16 @@ class SettingsForm(QWidget):
         form.addRow("下课静音判定", self.spn_silence)
         form.addRow("并发 AI 请求数", self.spn_concurrent)
         form.addRow("每 N 片汇总笔记", self.spn_notes_every)
+        form.addRow("", self.chk_agent)
+        form.addRow("", self.chk_revise)
+        form.addRow("每任务最多自动重做", self.spn_max_revise)
+        form.addRow("单次督导最多工具轮数", self.spn_tool_rounds)
         outer.addLayout(form)
+        outer.addWidget(_hint(
+            "主 Agent 会盯着老师新讲的内容：一旦发现「这是在补充某个任务的要求」，"
+            "就调用工具把新要求写进该任务的简报，并让作业子 Agent 用最新简报重做。\n"
+            "「每任务最多自动重做」用来兜住 API 开销；设为 0 就只补充简报、不自动重做。"
+        ))
         outer.addWidget(_hint(
             "「每 N 片汇总笔记」决定多久回头整理一次课堂内容并识别新任务：越小越灵敏。\n"
             "配合上面的切片长度使用——例如 切片 5 秒 + 每 1 片汇总，老师刚布置完作业就会开始作答；"
@@ -605,6 +618,10 @@ class SettingsForm(QWidget):
         self.spn_silence.setValue(int(beh.end_of_class_silence_s))
         self.spn_concurrent.setValue(int(beh.max_concurrent_ai))
         self.spn_notes_every.setValue(int(beh.notes_every_n_chunks))
+        self.chk_agent.setChecked(bool(getattr(beh, "agent_tools_enabled", True)))
+        self.chk_revise.setChecked(bool(getattr(beh, "auto_revise_solved", True)))
+        self.spn_max_revise.setValue(int(getattr(beh, "max_auto_revisions", 2)))
+        self.spn_tool_rounds.setValue(int(getattr(beh, "agent_max_tool_rounds", 3)))
 
         overrides = self._cfg.prompt_overrides or {}
         self.edt_overrides.setPlainText(json.dumps(overrides, ensure_ascii=False, indent=2) if overrides else "")
@@ -702,6 +719,10 @@ class SettingsForm(QWidget):
         beh.end_of_class_silence_s = int(self.spn_silence.value())
         beh.max_concurrent_ai = int(self.spn_concurrent.value())
         beh.notes_every_n_chunks = int(self.spn_notes_every.value())
+        beh.agent_tools_enabled = self.chk_agent.isChecked()
+        beh.auto_revise_solved = self.chk_revise.isChecked()
+        beh.max_auto_revisions = int(self.spn_max_revise.value())
+        beh.agent_max_tool_rounds = int(self.spn_tool_rounds.value())
 
         parsed = self._parse_overrides()
         if parsed is not None:

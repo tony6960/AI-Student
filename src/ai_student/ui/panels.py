@@ -55,6 +55,23 @@ TASK_STATUS_TEXT = {
 TASK_COLUMNS = ["标题", "类型", "状态", "置信度", "产出", "操作"]
 
 
+def _status_with_revision(data: dict) -> str:
+    """状态列：把"老师补充要求后自动重做"这件事显示出来，用户才知道发生了什么。"""
+    raw = get_str(data, "status", "-")
+    text = TASK_STATUS_TEXT.get(raw, raw)
+    if data.get("closed"):
+        return text + "（已关闭）"
+    brief = get_str(data, "brief")
+    marker = " ↻" if brief else ""
+    auto = int(get_float(data, "auto_revised"))
+    revision = int(get_float(data, "revision"))
+    if auto > 0:
+        return f"{text}{marker}（已自动重做 {auto} 次）"
+    if revision > 1:
+        return f"{text}{marker}（重做 {revision - 1} 次）"
+    return text + marker
+
+
 def _ro_text(placeholder: str = "") -> QPlainTextEdit:
     """只读文本区。"""
     view = QPlainTextEdit()
@@ -489,7 +506,7 @@ class TasksPanel(QWidget):
         values = [
             title,
             get_str(data, "task_type", "作业"),
-            TASK_STATUS_TEXT.get(get_str(data, "status"), get_str(data, "status", "-")),
+            _status_with_revision(data),
             f"{get_float(data, 'confidence') * 100:.0f}%",
             str(len(data.get("artifacts") or [])),
         ]
