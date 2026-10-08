@@ -120,11 +120,12 @@ class FakeLLM:
 
     def chat(self, system: str, user: str, images: list | None = None,
              model: str | None = None, json_mode: bool = False,
-             temperature: float | None = None, max_tokens: int | None = None) -> str:
+             temperature: float | None = None, max_tokens: int | None = None,
+             endpoint: str = "chat") -> str:
         self.calls.append({
             "system": system, "user": user, "images": list(images or []),
             "model": model, "json_mode": json_mode, "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens, "endpoint": endpoint,
         })
         if self.error is not None:
             raise self.error
@@ -477,6 +478,24 @@ def test_parse_board_analysis_tolerates_bad_shapes():
 def test_board_analysis_fields_match_contract():
     assert [f.name for f in dataclasses.fields(BoardAnalysis)] == [
         "ocr_text", "summary", "key_points", "problems", "subject_hint"]
+
+
+def test_reasoning_model_truncation_is_reported():
+    """推理模型把 max_tokens 花在思考上时，必须给出明确报错而不是空字符串。"""
+    from ai_student.ai.client import truncated_by_reasoning
+
+    truncated = {"choices": [{"finish_reason": "length", "message": {
+        "content": "", "reasoning_content": "让我想想……"}}]}
+    assert truncated_by_reasoning(truncated) is True
+
+    ok = {"choices": [{"finish_reason": "stop", "message": {
+        "content": "答案", "reasoning_content": "让我想想……"}}]}
+    assert truncated_by_reasoning(ok) is False
+
+    no_reasoning = {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+    assert truncated_by_reasoning(no_reasoning) is False, "普通模型返回空不能误判成推理截断"
+
+    assert truncated_by_reasoning({}) is False
 
 
 def test_analyze_board_uses_vision_model():

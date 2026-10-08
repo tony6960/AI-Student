@@ -846,6 +846,7 @@ def test_screen_recorder_window_fallback_warns_once(monkeypatch, tmp_path):
     monkeypatch.setattr(screen_mod, "new_mss", lambda: fake)
     monkeypatch.setattr(screen_mod, "_window_alive", lambda hwnd: True)
     monkeypatch.setattr(screen_mod, "_window_minimized", lambda hwnd: True)
+    monkeypatch.setattr(screen_mod, "_WINDOW_GRACE_SECONDS", 0.4)
     monkeypatch.setattr(
         screen_mod,
         "find_classroom_windows",
@@ -865,10 +866,17 @@ def test_screen_recorder_window_fallback_warns_once(monkeypatch, tmp_path):
     recorder = ScreenRecorder(cfg, tmp_path, on_error=errors.append)
     recorder.start()
     assert recorder.source["kind"] == "window" and recorder.source["hwnd"] == 123
-    time.sleep(0.8)
+
+    # 宽限期内：一帧都不抓。整屏里是老师屏幕之外的桌面内容，录进去会污染课堂记录。
+    time.sleep(0.2)
+    assert fake.grabs == 0, "窗口刚不可用时应先跳过帧，不能立刻抓整屏"
+    assert not [e for e in errors if "整屏" in e], "宽限期内不该告警"
+
+    # 超过宽限期：回退整屏继续录，并且只告警一次
+    time.sleep(1.2)
     recorder.stop()
-    assert fake.grabs >= 2, "窗口最小化时也应继续抓屏"
-    assert sum(1 for e in errors if "最小化" in e) == 1
+    assert fake.grabs >= 2, "持续不可用后应回退整屏继续抓屏"
+    assert sum(1 for e in errors if "整屏" in e) == 1, "只应告警一次"
 
 
 def test_screen_recorder_survives_broken_grab(monkeypatch, tmp_path):
