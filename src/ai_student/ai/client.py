@@ -102,6 +102,26 @@ def _part_text(part: Any) -> str:
     return str(text or "")
 
 
+def truncated_by_reasoning(resp: Any) -> bool:
+    """推理模型（如 DeepSeek 的 flash 系列）把 max_tokens 全花在思考过程上的情况。
+
+    这时 finish_reason 是 length、content 是空、而 reasoning_content 有内容。
+    如果不识别出来，调用方只会拿到空字符串，最后表现为莫名其妙的"模型没有返回内容"。
+    """
+    choices = _get(resp, "choices") or []
+    if not choices:
+        return False
+    choice = choices[0]
+    message = _get(choice, "message")
+    content = _get(message, "content")
+    reasoning = _get(message, "reasoning_content") or _get(message, "reasoning")
+    return (
+        not str(content or "").strip()
+        and bool(str(reasoning or "").strip())
+        and str(_get(choice, "finish_reason") or "") == "length"
+    )
+
+
 def response_tool_calls(resp: Any) -> list[dict[str, Any]]:
     """从响应里取出 tool_calls，统一成 [{"id","name","arguments"(dict),"raw"}]。"""
     choices = _get(resp, "choices") or []
@@ -238,6 +258,7 @@ class LLMClient:
         self.cfg = cfg
         self._client = self._build_client(cfg.base_url, cfg.api_key)
         self._asr_client: Any | None = None
+        self._vision_client: Any | None = None
 
     # -------------------------------------------------- 构造
     def _build_client(self, base_url: str, api_key: str) -> Any:
@@ -266,9 +287,22 @@ class LLMClient:
             )
         return self._asr_client
 
+    def vision_client(self) -> Any:
+        """视觉客户端：常见组合是"文本用 DeepSeek、看图用通义 VL"。"""
+        cfg = self.cfg
+        same_endpoint = (cfg.effective_vision_base_url == cfg.base_url
+                         and cfg.effective_vision_api_key == cfg.api_key)
+        if same_endpoint:
+            return self._client
+        if self._vision_client is None:
+            self._vision_client = self._build_client(
+                cfg.effective_vision_base_url, cfg.effective_vision_api_key
+            )
+        return self._vision_client
+
     # -------------------------------------------------- 请求 + 重试
     def _secrets(self) -> list[str]:
-        return [self.cfg.api_key, self.cfg.asr_api_key]
+        return [self.cfg.api_key, self.cfg.asr_api_key, self.cfg.vision_api_key]
 
     def request(self, call: Callable[[], Any], what: str = "模型请求") -> Any:
         """执行一次 SDK 调用：带指数退避重试，并把异常统一包装成 AIClientError。"""
@@ -299,17 +333,19 @@ class LLMClient:
     # -------------------------------------------------- 对话
     def chat(self, system: str, user: str, images: Sequence[bytes | Path] | None = None,
              model: str | None = None, json_mode: bool = False,
-             temperature: float | None = None, max_tokens: int | None = None) -> str:
+             temperature: float | None = None, max_tokens: int | None = None,
+             endpoint: str = "chat") -> str:
         messages: list[dict[str, Any]] = []
         if (system or "").strip():
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": _user_content(user, images)})
         return self.chat_messages(messages, model=model, json_mode=json_mode,
-                                  temperature=temperature, max_tokens=max_tokens)
+                                  temperature=temperature, max_tokens=max_tokens,
+                                  endpoint=endpoint)
 
     def chat_messages(self, messages: list[dict], model: str | None = None,
                       json_mode: bool = False, temperature: float | None = None,
-                      max_tokens: int | None = None) -> str:
+                      max_tokens: int | None = None, endpoint: str = "chat") -> str:
         payload: dict[str, Any] = {
             "model": model or self.cfg.chat_model,
             "messages": messages,
@@ -322,18 +358,21 @@ class LLMClient:
             payload["max_tokens"] = limit
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        cli = self.vision_client() if endpoint == "vision" else self._client
+        what = "画面理解请求" if endpoint == "vision" else "对话请求"
         try:
-            resp = self.request(
-                lambda: self._client.chat.completions.create(**payload), "对话请求"
-            )
+            resp = self.request(lambda: cli.chat.completions.create(**payload), what)
         except AIClientError as exc:
             # 少数兼容服务不支持 response_format，退回「提示词约束 JSON」再试一次。
             if not json_mode or exc.status not in (400, 404, 422):
                 raise
             logger.warning("该服务不接受 response_format=json_object，改用提示词约束重试")
             payload.pop("response_format", None)
-            resp = self.request(
-                lambda: self._client.chat.completions.create(**payload), "对话请求"
+            resp = self.request(lambda: cli.chat.completions.create(**payload), what)
+        if truncated_by_reasoning(resp):
+            raise AIClientError(
+                "模型把 max_tokens 全部用在思考过程上，没有输出正式内容；"
+                "请在 设置 → 模型 API 调大「单次最大 tokens」后重试"
             )
         return response_text(resp)
 
@@ -359,9 +398,15 @@ class LLMClient:
         limit = int(max_tokens if max_tokens is not None else (self.cfg.max_tokens or 0))
         if limit > 0:
             payload["max_tokens"] = limit
-        return self.request(
+        resp = self.request(
             lambda: self._client.chat.completions.create(**payload), "工具调用请求"
         )
+        if truncated_by_reasoning(resp):
+            raise AIClientError(
+                "模型把 max_tokens 全部用在思考过程上，没有输出工具调用；"
+                "请在 设置 → 模型 API 调大「单次最大 tokens」后重试"
+            )
+        return resp
 
     # -------------------------------------------------- 语音 / 视觉入口
     def transcribe(self, wav_path: Path) -> str:

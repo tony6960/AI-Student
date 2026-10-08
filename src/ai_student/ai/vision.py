@@ -40,6 +40,7 @@ def analyze_board(client: LLMClient, image: bytes | Path, cfg: ModelEndpoint,
         model=cfg.effective_vision_model,
         json_mode=True,
         temperature=0.1,
+        endpoint="vision",
     )
     return parse_board_analysis(text)
 
