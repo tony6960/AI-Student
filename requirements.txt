@@ -1,0 +1,36 @@
+# AI学生 (AI Student) - Windows desktop role-playing class agent
+# Python 3.10+ (developed and verified on CPython 3.14, Windows 11 x64)
+#
+# 说明: PySide6 / opencv / numpy / openai / dashscope 等体积较大的依赖
+# 若本机已安装可复用；requirements.txt 覆盖全部硬性依赖。
+
+# ---- GUI ----
+PySide6>=6.6,<7
+
+# ---- 采集: 音频 (WASAPI 麦克风 + 系统回环) ----
+PyAudioWPatch>=0.2.12.9      # PortAudio WASAPI loopback, Windows
+SoundCard>=0.4.6             # 备用采集后端 (cffi/WASAPI)
+soundfile>=0.12              # WAV 读写
+numpy>=1.24
+
+# ---- 采集: 屏幕 (极域电子教室远程演示) ----
+mss>=9.0                     # 快速屏幕抓取
+pywin32>=306                 # 窗口枚举 / DPI / DPAPI 加密 (Windows)
+Pillow>=10.0                 # 图像处理 / dHash 关键帧去重
+opencv-python>=4.8           # 图像差异与编码 (可选加速)
+
+# ---- 录制封装 ----
+imageio-ffmpeg>=0.4.9        # 自带静态 ffmpeg.exe, 免安装
+
+# ---- AI (多模态大模型) ----
+openai>=1.30                 # OpenAI 兼容接口 (通义/智谱/月之暗面/DeepSeek/OpenAI...)
+httpx>=0.27
+dashscope>=1.20              # 阿里云百炼原生 SDK (可选, 语音识别)
+python-docx>=1.1             # 作业导出 .docx
+
+# ---- 测试 (可选，开发用) ----
+pytest>=8.0
+pytest-qt>=4.4
+
+# ---- 打包 (可选，见 build_exe.bat) ----
+# pyinstaller>=6.6

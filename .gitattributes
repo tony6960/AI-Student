@@ -1,0 +1,23 @@
+# 统一换行：源码用 LF，Windows 脚本保持 CRLF
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.mp4 binary
+*.wav binary
+*.exe binary
+*.dll binary
+
+# 语言统计
+docs/** linguist-documentation
+examples/** linguist-documentation

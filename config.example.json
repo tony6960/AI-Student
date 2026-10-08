@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "model": {
+    "provider": "qwen",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "在这里填入你的 API KEY（软件内保存时会用 Windows DPAPI 加密）",
+    "chat_model": "qwen-vl-max-latest",
+    "vision_model": "qwen-vl-max-latest",
+    "asr_model": "qwen3-asr-flash",
+    "asr_kind": "openai_audio",
+    "asr_base_url": "",
+    "asr_api_key": "",
+    "temperature": 0.3,
+    "max_tokens": 4096,
+    "timeout_s": 120,
+    "retries": 2,
+    "extra_headers": {}
+  },
+  "person": {
+    "name": "张三",
+    "student_id": "20260101",
+    "class_name": "高一(3)班",
+    "grade": "高一",
+    "school": "示例中学",
+    "teacher_name": "李老师",
+    "subject": "数学",
+    "answer_style": "标准作答",
+    "language": "zh-CN",
+    "sign_artifacts": true,
+    "extra_notes": ""
+  },
+  "capture": {
+    "mic_enabled": true,
+    "mic_device": "",
+    "loopback_enabled": true,
+    "loopback_device": "",
+    "sample_rate": 16000,
+    "channels": 1,
+    "chunk_seconds": 20,
+    "vad_silence_db": -45,
+    "keep_full_audio": true,
+    "screen_enabled": true,
+    "screen_source": "window",
+    "window_title_keywords": [
+      "极域",
+      "TopDomain",
+      "电子教室",
+      "教师演示",
+      "学生演示",
+      "屏幕广播"
+    ],
+    "monitor_index": 1,
+    "region": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "keyframe_interval_s": 8,
+    "keyframe_change_threshold": 0.05,
+    "max_keyframe_width": 1280,
+    "record_video": true,
+    "video_fps": 2,
+    "video_crf": 28,
+    "max_session_minutes": 240
+  },
+  "output": {
+    "output_dir": "D:\\\\我的作业\\\\AI学生",
+    "create_session_subfolder": true,
+    "write_formats": [
+      "md",
+      "docx"
+    ],
+    "naming_template": "{date}_{subject}_{session}",
+    "include_workpaper": true,
+    "include_transcript": true,
+    "auto_open_folder": true,
+    "write_summary": true
+  },
+  "behavior": {
+    "auto_start_on_launch": false,
+    "auto_understand": true,
+    "auto_solve_tasks": true,
+    "solve_on_session_end": true,
+    "min_task_confidence": 0.35,
+    "end_of_class_silence_s": 300,
+    "auto_stop_on_class_end": false,
+    "max_concurrent_ai": 2,
+    "vision_analysis": true,
+    "notes_every_n_chunks": 3
+  },
+  "prompt_overrides": {},
+  "last_session_id": ""
+}
