@@ -44,6 +44,8 @@ _JOIN_TIMEOUT = 20.0
 _READY_TIMEOUT = 5.0
 _PREVIEW_WIDTH = 640
 _MIN_GRAB_SIDE = 16
+# 演示窗口瞬间不可用时先跳过帧的宽限期（秒）；超过这个时长才回退整屏并告警
+_WINDOW_GRACE_SECONDS = 8.0
 
 
 # ------------------------------------------------------------------ dHash
@@ -323,6 +325,7 @@ class ScreenRecorder:
         self._last_keyframe: Path | None = None
         self._preview: bytes | None = None
         self._fallback_warned = False
+        self._unavailable_since: float | None = None
         self._start_error = ""
         self._stopped = False
         self._result: Path | None = None
@@ -405,6 +408,7 @@ class ScreenRecorder:
             self._last_keyframe = None
             self._preview = None
             self._fallback_warned = False
+            self._unavailable_since = None
             self._start_error = ""
             self._stopped = False
             self._result = None
@@ -625,11 +629,22 @@ class ScreenRecorder:
 
         if kind == "window" and hwnd:
             if not _window_alive(hwnd) or _window_minimized(hwnd):
+                # 窗口偶尔会瞬间"看起来最小化"（切换、重建句柄等）。这时**先跳过这一帧**，
+                # 绝不能立刻改抓整屏：整屏里是老师屏幕之外的桌面内容，一旦录进去，
+                # 视觉模型会把无关画面（比如别的软件界面）当成课堂内容写进笔记。
+                if self._unavailable_since is None:
+                    self._unavailable_since = time.monotonic()
+                gone = time.monotonic() - self._unavailable_since
+                if gone < _WINDOW_GRACE_SECONDS:
+                    return None
                 if not self._fallback_warned:
-                    self._report("演示窗口已最小化或关闭，暂时改用整屏抓取")
+                    self._report(
+                        "演示窗口持续不可用 %.0f 秒，暂时改用整屏抓取" % gone
+                    )
                     self._fallback_warned = True
                 rect = self._monitor_rect(sct)
             else:
+                self._unavailable_since = None
                 left, top, right, bottom = window_rect(hwnd)
                 width, height = right - left, bottom - top
                 if width >= _MIN_GRAB_SIDE and height >= _MIN_GRAB_SIDE:
