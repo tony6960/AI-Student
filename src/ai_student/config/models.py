@@ -23,6 +23,15 @@ MODEL_PRESETS: dict[str, dict[str, Any]] = {
         "asr_kind": "openai_audio",
         "docs": "https://bailian.console.aliyun.com/",
     },
+    "deepseek": {
+        "label": "DeepSeek（deepseek-flash，推理模型且支持看图；语音识别需另配）",
+        "base_url": "https://api.deepseek.com/v1",
+        "chat_model": "deepseek-flash",
+        "vision_model": "deepseek-flash",
+        "asr_model": "",
+        "asr_kind": "none",
+        "docs": "https://platform.deepseek.com/",
+    },
     "openai": {
         "label": "OpenAI",
         "base_url": "https://api.openai.com/v1",
@@ -88,7 +97,7 @@ MODEL_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-AsrKind = Literal["openai_transcription", "openai_audio", "none"]
+AsrKind = Literal["openai_transcription", "openai_audio", "dashscope_realtime", "none"]
 
 
 def get_preset(key: str) -> dict[str, Any]:
@@ -113,8 +122,12 @@ class ModelEndpoint:
     asr_kind: AsrKind = "openai_audio"
     asr_base_url: str = ""
     asr_api_key: str = ""
+    vision_base_url: str = ""    # 视觉可单独换一家（例如文本用 DeepSeek、看图用通义 VL）
+    vision_api_key: str = ""
     temperature: float = 0.3
-    max_tokens: int = 4096
+    # 输出上限（不是强制长度）。推理模型会先花 token 思考，给小了正式内容会被挤没，
+    # 所以默认直接给 8192；普通模型用不完也不会多花钱。
+    max_tokens: int = 8192
     timeout_s: int = 120
     retries: int = 2
     extra_headers: dict[str, str] = field(default_factory=dict)
@@ -131,6 +144,14 @@ class ModelEndpoint:
     @property
     def effective_vision_model(self) -> str:
         return self.vision_model or self.chat_model
+
+    @property
+    def effective_vision_base_url(self) -> str:
+        return self.vision_base_url or self.base_url
+
+    @property
+    def effective_vision_api_key(self) -> str:
+        return self.vision_api_key or self.api_key
 
     def is_configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.chat_model)

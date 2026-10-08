@@ -136,7 +136,7 @@ class SettingsForm(QWidget):
         self.edt_asr_base_url = QLineEdit()
         self.edt_asr_base_url.setPlaceholderText("留空则沿用上面的服务地址")
         self.spn_temperature = _dspin(0.0, 2.0, 0.3, 0.1, 2)
-        self.spn_max_tokens = _spin(256, 32768, 4096, "", 256)
+        self.spn_max_tokens = _spin(256, 32768, 8192, "", 256)
         self.spn_timeout = _spin(10, 1800, 120, " 秒", 10)
         self.spn_retries = _spin(0, 5, 2, " 次")
 

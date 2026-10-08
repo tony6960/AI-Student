@@ -153,6 +153,7 @@ def config_from_dict(data: dict[str, Any]) -> AppConfig:
     )
     cfg.model.api_key = unprotect_secret(cfg.model.api_key)
     cfg.model.asr_api_key = unprotect_secret(cfg.model.asr_api_key)
+    cfg.model.vision_api_key = unprotect_secret(cfg.model.vision_api_key)
     if not cfg.output.output_dir:
         cfg.output.output_dir = str(default_output_dir())
     return cfg
@@ -163,6 +164,7 @@ def config_to_dict(cfg: AppConfig) -> dict[str, Any]:
     data["version"] = CONFIG_VERSION
     data["model"]["api_key"] = protect_secret(cfg.model.api_key)
     data["model"]["asr_api_key"] = protect_secret(cfg.model.asr_api_key)
+    data["model"]["vision_api_key"] = protect_secret(cfg.model.vision_api_key)
     return data
 
 
