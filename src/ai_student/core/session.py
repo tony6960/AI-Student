@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Iterable
 
@@ -30,11 +31,42 @@ from .models import BoardNote, ClassTask, SessionBundle, SessionInfo, Transcript
 log = logging.getLogger(__name__)
 
 
-def _write_json_atomic(path: Path, data: object) -> None:
+# 同一个文件可能被多个线程同时写：采集线程写转写、视觉线程写板书、
+# 线程池里的作答/督导任务又在写 tasks.json 和 session.json。
+# Windows 下两个线程同时打开同一个 .tmp 会直接 PermissionError，
+# 所以这里给每个路径一把锁，并且每次用**唯一**的临时文件名。
+_WRITE_LOCKS: dict[str, threading.Lock] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    key = str(path.resolve()) if path.is_absolute() else str(path)
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _WRITE_LOCKS[key] = lock
+        return lock
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """线程安全 + 进程安全的原子写：先写唯一临时文件，再 os.replace。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name("%s.%d.%d.tmp" % (path.name, os.getpid(), threading.get_ident()))
+    with _lock_for(path):
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+
+def _write_json_atomic(path: Path, data: object) -> None:
+    _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -56,9 +88,11 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 def _append_jsonl(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(data, ensure_ascii=False) + "\n")
-        fh.flush()
+    line = json.dumps(data, ensure_ascii=False) + "\n"
+    with _lock_for(path):
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
 
 
 class SessionWorkspace:
@@ -192,8 +226,7 @@ class SessionWorkspace:
 
     # ------------------------------------------------------------ 笔记
     def write_notes(self, markdown: str) -> None:
-        self.notes_path.parent.mkdir(parents=True, exist_ok=True)
-        self.notes_path.write_text(markdown or "", encoding="utf-8")
+        _atomic_write_text(self.notes_path, markdown or "")
 
     def read_notes(self) -> str:
         return self.notes_path.read_text(encoding="utf-8", errors="replace") if self.notes_path.exists() else ""
@@ -214,8 +247,7 @@ class SessionWorkspace:
         md = ["# 课堂时间轴", "", f"- 会话：{self.info.display_name}", ""]
         md.extend(r[1] for r in rows)
         content = "\n".join(md) + "\n"
-        self.timeline_path.parent.mkdir(parents=True, exist_ok=True)
-        self.timeline_path.write_text(content, encoding="utf-8")
+        _atomic_write_text(self.timeline_path, content)
         return content
 
     # ------------------------------------------------------------ 任务
