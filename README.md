@@ -220,7 +220,9 @@ set PYTHONPATH=%CD%\src
 | 接口地址 | OpenAI 兼容的 `/v1` 地址 |
 | API KEY | 加密保存；可用「测试连接」验证 |
 | 对话模型 / 视觉模型 | 必须支持图片输入（如 `qwen-vl-max-latest`、`gpt-4o`、`glm-4v-plus`） |
-| 语音识别模型 | 如 `qwen3-asr-flash`、`whisper-1`；音源类型可选 transcription 接口或 chat audio 接口 |
+| 语音识别模型 | 如 `fun-asr-realtime-2026-02-28`、`qwen3-asr-flash`、`whisper-1` |
+| 识别方式 | `openai_transcription`（转写接口）/ `openai_audio`（chat 带音频）/ `dashscope_realtime`（百炼实时语音识别，WebSocket） |
+| 视觉单独换服务商 | 可留空复用主服务；填了就单独走（例如文本用 DeepSeek、看图用通义 VL） |
 | 温度 / 超时 / 重试 | 默认 0.3 / 120s / 2 次 |
 
 ### 采集
@@ -314,6 +316,12 @@ set PYTHONPATH=%CD%\src
 
 :: 真机端到端：老师分两次说完要求 -> 主 Agent 调工具 -> 子 Agent 自动重做
 .venv\Scripts\python.exe tools\e2e_revision.py --seconds 30 --chunk 6
+
+:: 用本地视频当"极域演示"跑完整课堂（真实采集 + 真实模型），最适合验收
+.venv\Scripts\python.exe tools\demo_video_class.py --start 360 --seconds 480
+
+:: 把整段视频/录音转成带时间码的文字稿（挑片段、验收语音识别质量）
+.venv\Scripts\python.exe tools\transcribe_video.py --file .runs\video\lecture.mp4
 ```
 
 ### 代码结构
@@ -366,6 +374,13 @@ src/ai_student/
    保证录像时长 == 真实录制时长、与转写时间码对得上。
 4. **采集启动不阻塞界面**：打开被占用/无响应的设备可能要几秒，引擎把采集启动放到
    后台线程，点"开始听课"立即返回（实测 0.01 秒）。
+5. **演示窗口瞬时不可用会把别人的屏幕录进来**：窗口偶尔会瞬间"看起来最小化"，原逻辑
+   立刻回退整屏，结果把桌面上的其它软件画面录进课堂，视觉模型还把它当成课堂内容写进
+   笔记（实测中真的发生了）。现在改为**先跳过这一帧**，持续不可用超过 8 秒才回退整屏
+   并告警，保证课堂记录里不会混入无关画面。
+6. **推理模型会把 max_tokens 花在"思考"上**：DeepSeek 的 flash 系列先输出
+   reasoning_content，max_tokens 给小了正式内容就是空字符串，表现为莫名其妙的
+   "模型没有返回内容"。客户端现在会识别这种情况并明确报错，提示调大「单次最大 tokens」。
 
 > 开发提示：用 QT_QPA_PLATFORM=offscreen 做无头截图时，需额外设置
 > QT_QPA_FONTDIR=C:\Windows\Fonts，否则中文会渲染成方块；正常桌面运行
