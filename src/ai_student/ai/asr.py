@@ -75,7 +75,7 @@ def transcribe_chunk(client: LLMClient, wav_path: Path, cfg: ModelEndpoint,
     kind = (cfg.asr_kind or "none").strip()
     if kind == "none":
         raise AIClientError("未配置语音识别模型（请在 设置 → 模型 API 选择支持语音识别的服务）")
-    if kind not in ("openai_transcription", "openai_audio"):
+    if kind not in ("openai_transcription", "openai_audio", "dashscope_realtime"):
         raise AIClientError(f"不支持的语音识别类型：{kind}")
 
     path = Path(wav_path)
@@ -91,6 +91,10 @@ def transcribe_chunk(client: LLMClient, wav_path: Path, cfg: ModelEndpoint,
     if not data:
         return ""
 
+    if kind == "dashscope_realtime":
+        from .asr_realtime import transcribe_chunk_realtime
+
+        return (transcribe_chunk_realtime(client, path, cfg, hint) or "").strip()
     if kind == "openai_transcription":
         text = _transcribe_via_transcriptions(client, cfg, data, hint)
     else:
